@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 
 import { Layout } from "../components/Layout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -12,6 +12,7 @@ import TradeForm from "@/components/TradeForm";
 import PortfolioTable from "@/components/PortfolioTable";
 import TradingPayoffChart from "@/components/TradingPayoffChart";
 import { mockPortfolio } from "@/lib/mockData";
+import type { Trade } from "@/types";
 import { League } from "@/utils/league-service";
 import { getLeaderboardByLeagueId } from "@/lib/mockData";
 
@@ -30,10 +31,39 @@ const defaultRules = [
 ];
 
 export default function Dashboard() {
-  const [portfolio, setPortfolio] = useState(mockPortfolio);
+  const [portfolio, setPortfolio] = useState<Trade[]>(mockPortfolio);
   const navigate = useNavigate();
   const [currentLeague, setCurrentLeague] = useState<League | null>(null);
   const [leaderboard, setLeaderboard] = useState<Array<{ rank: number; username: string; portfolioValue: number; pnl: number; pnlPercent: number }>>([]);
+
+  // Build portfolio from paper trading storage (Analysis page)
+  const loadPaperPortfolio = (): Trade[] => {
+    try {
+      const rawPos = localStorage.getItem('paperPositions');
+      const rawMeta = localStorage.getItem('paperPositionMeta');
+      const positions = rawPos ? JSON.parse(rawPos) as Record<string, { quantity: number; avgCost: number; realizedPnL: number }> : {};
+      const meta = rawMeta ? JSON.parse(rawMeta) as Record<string, { underlying: string; option_type: 'call' | 'put'; strike: number; premium: number; expiration: string }> : {};
+      const trades: Trade[] = [];
+      for (const key of Object.keys(positions)) {
+        const p = positions[key];
+        if (!p || p.quantity <= 0) continue;
+        const m = meta[key];
+        if (!m) continue;
+        // premium for Trade is per-share; avgCost we track is per-contract. Convert to per-share.
+        const premiumPerShare = Math.max(0, (p.avgCost || (m.premium * 100)) / 100);
+        trades.push({
+          stock: m.underlying,
+          type: m.option_type,
+          strike: m.strike,
+          premium: Math.round(premiumPerShare * 100) / 100,
+          quantity: p.quantity,
+        });
+      }
+      return trades;
+    } catch {
+      return [];
+    }
+  };
 
   useEffect(() => {
     try {
@@ -45,9 +75,18 @@ export default function Dashboard() {
         const lb = getLeaderboardByLeagueId(parsed.id);
         setLeaderboard([...lb]);
       }
+      // Load paper trades into dashboard portfolio
+      setPortfolio(loadPaperPortfolio());
     } catch (e) {
       console.warn('Failed to read currentLeague from localStorage', e);
     }
+  }, []);
+
+  // Listen for updates from Analysis page and refresh positions
+  useEffect(() => {
+    const handler = () => setPortfolio(loadPaperPortfolio());
+    window.addEventListener('paper-portfolio-updated', handler as EventListener);
+    return () => window.removeEventListener('paper-portfolio-updated', handler as EventListener);
   }, []);
 
   const handleCopyJoinCode = () => {
@@ -279,9 +318,15 @@ export default function Dashboard() {
               <div className="grid grid-cols-1 xl:grid-cols-2 gap-8">
                 <Card>
                   <CardHeader>
-                    <CardTitle>Current Positions</CardTitle>
+                    <div className="flex items-center justify-between">
+                      <CardTitle>Current Positions</CardTitle>
+                      <div className="flex items-center gap-2">
+                        <Button size="sm" variant="outline" onClick={() => setPortfolio(loadPaperPortfolio())}>Refresh Positions</Button>
+                      </div>
+                    </div>
                   </CardHeader>
                   <CardContent>
+                    <div className="text-xs text-gray-500 mb-2">Source: Paper Trading (Analysis)</div>
                     <PortfolioTable portfolio={portfolio} />
                   </CardContent>
                 </Card>

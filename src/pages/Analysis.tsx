@@ -124,6 +124,7 @@ export function Analysis() {
   }, [contractKey]);
 
   type Position = { quantity: number; avgCost: number; realizedPnL: number };
+  type PositionMeta = { underlying: string; option_type: 'call' | 'put'; strike: number; premium: number; expiration: string };
   const savePaperState = (balance: number, positions: Record<string, Position>) => {
     localStorage.setItem('paperBalance', String(balance));
     localStorage.setItem('paperPositions', JSON.stringify(positions));
@@ -191,6 +192,22 @@ export function Analysis() {
     setAvgCost(newAvgCost);
     setRealizedPnL(current.realizedPnL);
     savePaperState(newBalance, positions);
+    // Persist metadata for this contract so dashboard can render positions
+    try {
+      const metaRaw = localStorage.getItem('paperPositionMeta');
+      const meta: Record<string, PositionMeta> = metaRaw ? JSON.parse(metaRaw) : {};
+      meta[contractKey] = {
+        underlying: contract.underlying,
+        option_type: contract.option_type,
+        strike: contract.strike,
+        premium: contract.premium,
+        expiration: contract.expiration,
+      };
+      localStorage.setItem('paperPositionMeta', JSON.stringify(meta));
+    } catch {}
+    // Notify listeners (dashboard) to refresh
+    try { console.debug('[PaperTrading] BUY saved', { contractKey, qty: newQty, avgCost: newAvgCost }); } catch {}
+    window.dispatchEvent(new CustomEvent('paper-portfolio-updated'));
     setLastTrade({ side: 'BUY', qty: quantity, pricePerContract: tradePricePerContract, fees: feePerContract * quantity, total: totalCost });
     toast.success(`Bought ${quantity} contract(s) for $${totalCost.toLocaleString()}`);
   };
@@ -333,12 +350,10 @@ export function Analysis() {
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.6 }}
-        className="space-y-8"
       >
         {/* Header */}
-        <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-          <div className="flex items-center gap-4">
+        <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-6">
+          <div className="flex items-center gap-2">
             <Button
               variant="ghost"
               size="sm"
@@ -347,14 +362,21 @@ export function Analysis() {
               <ArrowLeft className="h-4 w-4 mr-1" />
               Back
             </Button>
-            <div>
-              <h1 className="text-2xl md:text-3xl font-bold gradient-text">
-                {contract.underlying} ${contract.strike} {contract.option_type.toUpperCase()}
-              </h1>
-              <p className="text-muted-foreground">
-                <span className="font-medium text-primary">Expires {new Date(contract.expiration).toLocaleDateString()} • Premium ${formatPremium(contract.premium)}</span>
-              </p>
-            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => navigate('/dashboard')}
+            >
+              Home
+            </Button>
+          </div>
+          <div>
+            <h1 className="text-2xl md:text-3xl font-bold gradient-text">
+              {contract.underlying} ${contract.strike} {contract.option_type.toUpperCase()}
+            </h1>
+            <p className="text-muted-foreground">
+              <span className="font-medium text-primary">Expires {new Date(contract.expiration).toLocaleDateString()} • Premium ${formatPremium(contract.premium)}</span>
+            </p>
           </div>
         </div>
 
