@@ -17,3 +17,5 @@ pip install -r requirements.txt
 ```bash
 python main.py
 ```
+
+qurpax-xisviM-8juvga
