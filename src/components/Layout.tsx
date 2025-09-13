@@ -42,7 +42,7 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
                 Leagues
               </Link>
               <Link 
-                to="/analysis" 
+                to="/contracts" 
                 className="text-gray-600 hover:text-gray-900 font-medium"
               >
                 Options Analyzer
