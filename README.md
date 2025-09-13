@@ -1,21 +1,9 @@
-# fidelity_hackathon_2025
+#Fidelity_Hackathon_2025
 
 ## Installation & Setup
 
-### 1. Create a virtual environment
+### 1. To run
 ```bash
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+npm install
+npm run dev
 ```
-
-### 2. Install dependencies
-```bash
-pip install -r requirements.txt
-```
-
-### 3. Run the FastAPI server
-```bash
-python main.py
-```
-
-qurpax-xisviM-8juvga
