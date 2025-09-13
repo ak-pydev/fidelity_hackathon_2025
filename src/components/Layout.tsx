@@ -1,11 +1,22 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { userService, type User } from '@/utils/user-service';
 
 interface LayoutProps {
   children: React.ReactNode;
 }
 
 export const Layout: React.FC<LayoutProps> = ({ children }) => {
+  const [user, setUser] = useState<User | null>(null);
+  useEffect(() => {
+    setUser(userService.getCurrentUser());
+  }, []);
+
+  const handleSignOut = () => {
+    userService.signOut();
+    setUser(null);
+  };
+
   return (
     <div className="min-h-screen bg-gray-50">
       {/* Navigation */}
@@ -36,6 +47,21 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
               >
                 Options Analyzer
               </Link>
+              {user ? (
+                <div className="flex items-center gap-3">
+                  <div className="px-3 py-1 rounded-full bg-gray-100 text-gray-800 text-sm">
+                    Player: <span className="font-semibold">{user.username}</span>
+                  </div>
+                  <button onClick={handleSignOut} className="text-red-600 hover:underline text-sm">Sign out</button>
+                </div>
+              ) : (
+                <Link 
+                  to="/signup" 
+                  className="text-primary hover:underline font-medium"
+                >
+                  Create Player
+                </Link>
+              )}
             </div>
           </div>
         </div>

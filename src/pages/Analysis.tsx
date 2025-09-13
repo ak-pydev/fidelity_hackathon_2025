@@ -10,6 +10,8 @@ import { GreeksCard } from "@/components/GreeksCard";
 import { InsightCard } from "@/components/InsightCard";
 import { AlertBar } from "@/components/AlertBar";
 import { apiService, type AnalysisResult, type AnalysisRequest } from "@/utils/api-service";
+import { userService } from "@/utils/user-service";
+import { leaderboardService } from "@/utils/leaderboard-service";
 import { formatPremium } from "@/utils/formatting";
 import { toast } from "sonner";
 
@@ -25,6 +27,49 @@ export function Analysis() {
   const [paperBalance, setPaperBalance] = useState<number>(100000);
   const [quantity, setQuantity] = useState<number>(1);
   const [heldQty, setHeldQty] = useState<number>(0);
+  const [avgCost, setAvgCost] = useState<number>(0);
+  const [realizedPnL, setRealizedPnL] = useState<number>(0);
+  const [lastTrade, setLastTrade] = useState<
+    | null
+    | {
+        side: 'BUY' | 'SELL';
+        qty: number;
+        pricePerContract: number; // execution price per contract (premium * 100)
+        fees: number;
+        total: number; // total cash out/in including fees
+        pnl?: number; // total PnL for this trade (SELL only)
+        avgCostAtTrade?: number; // avg cost per contract at time of SELL
+        perContractPnL?: number; // (sell - avgCostAtTrade)
+      }
+  >(null);
+
+  // What-if Sell simulation
+  const [whatIfPrice, setWhatIfPrice] = useState<number | null>(null);
+  useEffect(() => {
+    // Initialize what-if price to a reasonable default when analysis loads
+    if (analysis && analysis.payoff_curve?.length) {
+      const midIndex = Math.floor(analysis.payoff_curve.length / 2);
+      setWhatIfPrice(analysis.payoff_curve[midIndex].price);
+    }
+  }, [analysis?.payoff_curve?.length]);
+
+  const findNearestPlPerShare = (price: number | null): number => {
+    if (!analysis || !analysis.payoff_curve || price == null) return 0;
+    // Find nearest point on payoff curve by absolute distance to price
+    let nearest = analysis.payoff_curve[0];
+    let minDiff = Math.abs(nearest.price - price);
+    for (const p of analysis.payoff_curve) {
+      const diff = Math.abs(p.price - price);
+      if (diff < minDiff) {
+        nearest = p;
+        minDiff = diff;
+      }
+    }
+    // p.pl is per-share P/L relative to entry premium at expiry in mock
+    return nearest.pl;
+  };
+
+  // (moved below tradePricePerContract)
 
   // Memoize the contract object to prevent unnecessary re-renders
   const contract = useMemo(() => {
@@ -56,45 +101,97 @@ export function Analysis() {
 
       if (contractKey) {
         const raw = localStorage.getItem('paperPositions');
-        const positions: Record<string, number> = raw ? JSON.parse(raw) : {};
-        setHeldQty(positions[contractKey] || 0);
+        // Support migration from old format (number) to object
+        const positions: Record<string, any> = raw ? JSON.parse(raw) : {};
+        const pos = positions[contractKey];
+        if (typeof pos === 'number') {
+          setHeldQty(pos || 0);
+          setAvgCost(0);
+          setRealizedPnL(0);
+        } else if (pos) {
+          setHeldQty(pos.quantity || 0);
+          setAvgCost(pos.avgCost || 0);
+          setRealizedPnL(pos.realizedPnL || 0);
+        } else {
+          setHeldQty(0);
+          setAvgCost(0);
+          setRealizedPnL(0);
+        }
       }
     } catch (e) {
       console.warn('Failed to load paper trading state', e);
     }
   }, [contractKey]);
 
-  const savePaperState = (balance: number, positions: Record<string, number>) => {
+  type Position = { quantity: number; avgCost: number; realizedPnL: number };
+  const savePaperState = (balance: number, positions: Record<string, Position>) => {
     localStorage.setItem('paperBalance', String(balance));
     localStorage.setItem('paperPositions', JSON.stringify(positions));
   };
 
-  const getPositions = (): Record<string, number> => {
+  const getPositions = (): Record<string, Position> => {
     try {
       const raw = localStorage.getItem('paperPositions');
-      return raw ? JSON.parse(raw) : {};
+      const parsed = raw ? JSON.parse(raw) : {};
+      // Normalize old numeric format to object format
+      Object.keys(parsed).forEach(k => {
+        if (typeof parsed[k] === 'number') {
+          parsed[k] = { quantity: parsed[k], avgCost: 0, realizedPnL: 0 };
+        }
+      });
+      return parsed;
     } catch {
       return {};
     }
   };
 
   const contractMultiplier = 100; // equity option multiplier
-  const currentCostPerContract = contract ? contract.premium * contractMultiplier : 0;
+  const feePerContract = 1.0; // simple flat fee per contract, per side
+  const tradePricePerContract = contract ? contract.premium * contractMultiplier : 0;
+
+  // Sync leaderboard stats with current paper account values for the current league
+  useEffect(() => {
+    try {
+      const user = userService.getCurrentUser();
+      const leagueRaw = localStorage.getItem('currentLeague');
+      if (!user || !leagueRaw) return;
+      const league = JSON.parse(leagueRaw);
+      const positionValue = heldQty * tradePricePerContract;
+      const portfolioValue = paperBalance + positionValue;
+      const totalPnL = portfolioValue - 100000;
+      const pnlPercent = (totalPnL / 100000) * 100;
+      leaderboardService.updatePlayerStats(league.id, user.id, {
+        portfolioValue,
+        pnl: totalPnL,
+        pnlPercent: Math.round(pnlPercent * 100) / 100,
+      });
+    } catch (e) {
+      // no-op
+    }
+  }, [paperBalance, heldQty, tradePricePerContract]);
 
   const handleBuy = () => {
     if (!contract || !contractKey) return;
-    const totalCost = currentCostPerContract * quantity;
+    const totalCost = tradePricePerContract * quantity + feePerContract * quantity;
     if (totalCost > paperBalance) {
       toast.error('Insufficient virtual balance');
       return;
     }
     const newBalance = paperBalance - totalCost;
     const positions = getPositions();
-    const newQty = (positions[contractKey] || 0) + quantity;
-    positions[contractKey] = newQty;
+    const current = positions[contractKey] || { quantity: 0, avgCost: 0, realizedPnL: 0 };
+    const newQty = current.quantity + quantity;
+    // average cost update on buy (price excludes fees in avg cost)
+    const newAvgCost = newQty > 0
+      ? (current.quantity * current.avgCost + quantity * tradePricePerContract) / newQty
+      : 0;
+    positions[contractKey] = { quantity: newQty, avgCost: newAvgCost, realizedPnL: current.realizedPnL };
     setPaperBalance(newBalance);
     setHeldQty(newQty);
+    setAvgCost(newAvgCost);
+    setRealizedPnL(current.realizedPnL);
     savePaperState(newBalance, positions);
+    setLastTrade({ side: 'BUY', qty: quantity, pricePerContract: tradePricePerContract, fees: feePerContract * quantity, total: totalCost });
     toast.success(`Bought ${quantity} contract(s) for $${totalCost.toLocaleString()}`);
   };
 
@@ -104,15 +201,48 @@ export function Analysis() {
       toast.error('Not enough contracts to sell');
       return;
     }
-    const totalCredit = currentCostPerContract * quantity;
-    const newBalance = paperBalance + totalCredit;
+    const grossProceeds = tradePricePerContract * quantity;
+    const fees = feePerContract * quantity;
+    const totalCredit = grossProceeds - fees;
     const positions = getPositions();
-    const newQty = (positions[contractKey] || 0) - quantity;
-    positions[contractKey] = Math.max(0, newQty);
+    const current = positions[contractKey] || { quantity: 0, avgCost: 0, realizedPnL: 0 };
+    const perContractPnL = (tradePricePerContract - current.avgCost);
+    const pnlOnThisSell = perContractPnL * quantity;
+    const newRealized = (current.realizedPnL || 0) + pnlOnThisSell;
+    const newQty = current.quantity - quantity;
+    const newBalance = paperBalance + totalCredit;
+    const newAvg = newQty > 0 ? current.avgCost : 0;
+    positions[contractKey] = { quantity: Math.max(0, newQty), avgCost: newAvg, realizedPnL: newRealized };
     setPaperBalance(newBalance);
     setHeldQty(Math.max(0, newQty));
+    setAvgCost(newAvg);
+    setRealizedPnL(newRealized);
     savePaperState(newBalance, positions);
-    toast.success(`Sold ${quantity} contract(s) for $${totalCredit.toLocaleString()}`);
+    setLastTrade({
+      side: 'SELL',
+      qty: quantity,
+      pricePerContract: tradePricePerContract,
+      fees,
+      total: totalCredit,
+      pnl: pnlOnThisSell,
+      avgCostAtTrade: current.avgCost,
+      perContractPnL,
+    });
+    toast.success(`Sold ${quantity} contract(s) for $${totalCredit.toLocaleString()} (fees $${fees.toLocaleString()})`);
+  };
+
+  const handleReset = () => {
+    const positions = getPositions();
+    if (contractKey && positions[contractKey]) {
+      delete positions[contractKey];
+    }
+    const newBalance = 100000;
+    setPaperBalance(newBalance);
+    setHeldQty(0);
+    setAvgCost(0);
+    setRealizedPnL(0);
+    savePaperState(newBalance, positions);
+    toast.success('Paper trading state reset');
   };
 
   const checkFirstAnalysis = () => {
@@ -233,11 +363,14 @@ export function Analysis() {
           <Card className="p-4 flex flex-col gap-2">
             <div className="text-sm text-muted-foreground">Virtual Balance</div>
             <div className="text-2xl font-bold">${paperBalance.toLocaleString()}</div>
-            <div className="text-xs text-muted-foreground">Cost/contract: ${currentCostPerContract.toLocaleString()}</div>
+            <div className="text-xs text-muted-foreground">Trade price/contract: ${tradePricePerContract.toLocaleString()} • Fee/contract: ${feePerContract.toLocaleString()}</div>
           </Card>
           <Card className="p-4 flex flex-col gap-3">
             <div className="text-sm text-muted-foreground">Your Position (this contract)</div>
             <div className="text-2xl font-bold">{heldQty} contract(s)</div>
+            <div className="text-sm">Avg cost/contract: ${avgCost.toLocaleString()}</div>
+            <div className="text-sm">Unrealized PnL: ${((tradePricePerContract - avgCost) * heldQty).toLocaleString()}</div>
+            <div className="text-sm">Realized PnL: ${realizedPnL.toLocaleString()}</div>
           </Card>
           <Card className="p-4 flex items-center gap-3">
             <input
@@ -249,7 +382,68 @@ export function Analysis() {
             />
             <Button onClick={handleBuy} className="flex-1">Buy</Button>
             <Button variant="outline" onClick={handleSell} className="flex-1">Sell</Button>
+            <Button variant="secondary" onClick={handleReset}>Reset</Button>
           </Card>
+          {lastTrade && (
+            <Card className="md:col-span-3 p-4">
+              <div className="flex flex-wrap items-center gap-4 text-sm">
+                <div className="font-semibold">Last Trade:</div>
+                <div className={lastTrade.side === 'BUY' ? 'text-blue-600' : 'text-green-600'}>{lastTrade.side}</div>
+                <div>Qty: <span className="font-mono">{lastTrade.qty}</span></div>
+                <div>{lastTrade.side === 'BUY' ? 'Cost/contract' : 'Sell price/contract'}: <span className="font-mono">${lastTrade.pricePerContract.toLocaleString()}</span></div>
+                {lastTrade.side === 'SELL' && (
+                  <>
+                    <div>Avg cost/contract: <span className="font-mono">${(lastTrade.avgCostAtTrade || 0).toLocaleString()}</span></div>
+                    <div>Gain/Loss per contract: <span className={`font-mono ${((lastTrade.perContractPnL || 0) >= 0) ? 'text-green-600' : 'text-red-600'}`}>${(lastTrade.perContractPnL || 0).toLocaleString()}</span></div>
+                  </>
+                )}
+                <div>Fees: <span className="font-mono">${lastTrade.fees.toLocaleString()}</span></div>
+                <div>Total {lastTrade.side === 'BUY' ? 'Cost' : 'Proceeds'}: <span className="font-mono">${lastTrade.total.toLocaleString()}</span></div>
+                {typeof lastTrade.pnl === 'number' && (
+                  <div>Trade PnL: <span className={`font-mono ${lastTrade.pnl >= 0 ? 'text-green-600' : 'text-red-600'}`}>${lastTrade.pnl.toLocaleString()}</span></div>
+                )}
+              </div>
+            </Card>
+          )}
+
+          {/* What-if Sell Simulator */}
+          {analysis && (
+            <Card className="md:col-span-3 p-4 space-y-3">
+              <div className="font-semibold">What-if Sell (Imagined Future)</div>
+              <div className="text-sm text-muted-foreground">Choose a hypothetical underlying price to estimate your sell outcome using the payoff curve.</div>
+              <div className="flex flex-wrap items-center gap-3">
+                <label className="text-sm">Underlying price:</label>
+                <input
+                  type="number"
+                  step={0.01}
+                  value={whatIfPrice ?? ''}
+                  onChange={(e) => setWhatIfPrice(Number(e.target.value))}
+                  className="w-32 border rounded px-2 py-1"
+                />
+                {whatIfPrice != null && (
+                  (() => {
+                    const plPerShare = findNearestPlPerShare(whatIfPrice);
+                    // Approx option value per share at that point = premium + plPerShare
+                    const estValuePerShare = Math.max(0, (contract?.premium || 0) + plPerShare);
+                    const estSellPerContract = estValuePerShare * contractMultiplier;
+                    const estPerContractPnL = estSellPerContract - avgCost; // vs current avg cost
+                    const estFees = feePerContract * quantity;
+                    const estTotalProceeds = estSellPerContract * quantity - estFees;
+                    const estTradePnL = (estSellPerContract - avgCost) * quantity;
+                    return (
+                      <div className="flex flex-wrap items-center gap-4 text-sm">
+                        <div>Est. sell/contract: <span className="font-mono">${estSellPerContract.toLocaleString()}</span></div>
+                        <div>Gain/Loss per contract: <span className={`font-mono ${estPerContractPnL >= 0 ? 'text-green-600' : 'text-red-600'}`}>${estPerContractPnL.toLocaleString()}</span></div>
+                        <div>Fees: <span className="font-mono">${estFees.toLocaleString()}</span></div>
+                        <div>Total proceeds (qty {quantity}): <span className="font-mono">${estTotalProceeds.toLocaleString()}</span></div>
+                        <div>Trade PnL (qty {quantity}): <span className={`font-mono ${estTradePnL >= 0 ? 'text-green-600' : 'text-red-600'}`}>${estTradePnL.toLocaleString()}</span></div>
+                      </div>
+                    );
+                  })()
+                )}
+              </div>
+            </Card>
+          )}
         </div>
 
         {/* Alert Bar - matches AI insight logic */}

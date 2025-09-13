@@ -5,6 +5,8 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Users, Trophy, Calendar, ArrowLeft } from 'lucide-react';
 import { leagueService, League } from '../utils/league-service';
+import { userService } from '@/utils/user-service';
+import { leaderboardService } from '@/utils/leaderboard-service';
 import { toast } from 'sonner';
 
 export default function LeagueDetails() {
@@ -17,6 +19,13 @@ export default function LeagueDetails() {
 
   const handleJoinLeague = async () => {
     if (!league?.join_code) return;
+    // Ensure user exists; if not, send to signup
+    const user = userService.getCurrentUser();
+    if (!user) {
+      toast.message('Create a player to join leagues');
+      navigate('/signup');
+      return;
+    }
     
     setJoining(true);
     try {
@@ -24,6 +33,12 @@ export default function LeagueDetails() {
       toast.success(result.message);
       // Update the league data to reflect the new member count
       setLeague(prev => prev ? { ...prev, member_count: prev.member_count + 1 } : null);
+      // Add current user to the league leaderboard (no-op if already present)
+      try {
+        leaderboardService.addPlayerToLeague(result.league.id, user);
+      } catch (e) {
+        console.warn('Failed to add player to leaderboard', e);
+      }
       // Persist joined league so Dashboard can render the correct league
       try {
         localStorage.setItem('currentLeague', JSON.stringify(result.league));

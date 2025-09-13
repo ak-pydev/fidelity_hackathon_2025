@@ -5,6 +5,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Users, Trophy, Calendar, Plus } from 'lucide-react';
 import { leagueService, League } from '../utils/league-service';
+import { userService } from '@/utils/user-service';
 
 export default function Leagues() {
   const navigate = useNavigate();
@@ -28,10 +29,29 @@ export default function Leagues() {
 
     fetchLeagues();
   }, []);
+
+  const handleJoinClick = (leagueId: string) => {
+    const user = userService.getCurrentUser();
+    if (!user) {
+      navigate('/signup');
+      return;
+    }
+    navigate('/leagues/join');
+  };
   return (
     <Layout>
       <div className="min-h-screen bg-gray-50">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+          {/* Create Player CTA if no user */}
+          {!userService.getCurrentUser() && (
+            <div className="mb-6 p-4 border rounded bg-white flex items-center justify-between">
+              <div>
+                <div className="font-semibold">Create a player to join leagues and appear on the leaderboard</div>
+                <div className="text-sm text-gray-600">It only takes a second — just pick a username.</div>
+              </div>
+              <Button onClick={() => navigate('/signup')}>Create Player</Button>
+            </div>
+          )}
           <div className="flex justify-between items-center mb-8">
             <div>
               <h1 className="text-3xl font-bold text-gray-900">Fantasy Leagues</h1>
@@ -114,7 +134,7 @@ export default function Leagues() {
                         <Button 
                           size="sm" 
                           variant="secondary"
-                          onClick={() => navigate('/leagues/join')}
+                          onClick={() => handleJoinClick(league.id)}
                         >
                           Join
                         </Button>
